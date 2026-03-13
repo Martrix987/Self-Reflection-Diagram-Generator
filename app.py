@@ -10,6 +10,7 @@ import hashlib
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -29,6 +30,42 @@ DEFAULT_RPG_SKILLS = [
     "Time Management",
 ]
 
+TIME_RIVER_ROOT = "Total Week (168)"
+
+# Starter rows for the weekly time flow editor.
+DEFAULT_TIME_RIVER_ROWS = [
+    {"Source": TIME_RIVER_ROOT, "Target": "Sleep", "Hours": 56},
+    {"Source": TIME_RIVER_ROOT, "Target": "Awake", "Hours": 112},
+    {"Source": "Awake", "Target": "Work", "Hours": 40},
+    {"Source": "Awake", "Target": "Coding", "Hours": 20},
+    {"Source": "Awake", "Target": "Exercise", "Hours": 7},
+    {"Source": "Awake", "Target": "Family & Social", "Hours": 15},
+    {"Source": "Awake", "Target": "Admin & Chores", "Hours": 10},
+    {"Source": "Awake", "Target": "Leisure", "Hours": 20},
+]
+
+# Dark-mode friendly accent colors for Sankey nodes.
+TIME_RIVER_NODE_COLOR_MAP = {
+    TIME_RIVER_ROOT: "#2DD4BF",
+    "Awake": "#38BDF8",
+    "Sleep": "#818CF8",
+    "Work": "#F59E0B",
+    "Coding": "#22C55E",
+    "Exercise": "#F97316",
+    "Family & Social": "#EC4899",
+    "Admin & Chores": "#A78BFA",
+    "Leisure": "#14B8A6",
+}
+
+TIME_RIVER_FALLBACK_COLORS = [
+    "#60A5FA",
+    "#34D399",
+    "#F59E0B",
+    "#FB7185",
+    "#A78BFA",
+    "#2DD4BF",
+]
+
 
 def _normalize_skill_name(skill_name: str) -> str:
     """Clean user text input by trimming spaces and collapsing repeats."""
@@ -39,6 +76,17 @@ def _slider_key_for_skill(skill_name: str) -> str:
     """Return a stable slider key for each skill name."""
     skill_digest = hashlib.md5(skill_name.casefold().encode("utf-8")).hexdigest()
     return f"rpg_score_{skill_digest[:12]}"
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    """Convert a hex color code to an rgba() string for link styling."""
+    clean_hex = hex_color.lstrip("#")
+    red, green, blue = (
+        int(clean_hex[0:2], 16),
+        int(clean_hex[2:4], 16),
+        int(clean_hex[4:6], 16),
+    )
+    return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
 def render_welcome() -> None:
@@ -202,10 +250,157 @@ def render_radar_builder() -> None:
             )
 
 
-def render_sankey_placeholder() -> None:
-    """Placeholder content for the time river sankey view."""
+def render_sankey_builder() -> None:
+    """Render the complete Time River Sankey workflow."""
     st.subheader("🌊 Time River (Sankey)")
-    st.caption("Sankey diagram generator will be implemented in a later step.")
+    st.caption("Map how your 168 weekly hours flow across priorities.")
+
+    if "time_river_rows" not in st.session_state:
+        st.session_state.time_river_rows = pd.DataFrame(DEFAULT_TIME_RIVER_ROWS)
+
+    # Keep the same split pattern as the radar section.
+    input_col, chart_col = st.columns([1, 1.2], gap="large")
+
+    with input_col:
+        st.markdown("#### User Inputs")
+        st.write(
+            "Add or remove rows to describe your time flow. "
+            "Each row is Source -> Target with Hours."
+        )
+
+        edited_rows = st.data_editor(
+            st.session_state.time_river_rows,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "Source": st.column_config.TextColumn(
+                    "Source",
+                    help="Where the hours come from",
+                    required=True,
+                ),
+                "Target": st.column_config.TextColumn(
+                    "Target",
+                    help="Where the hours go",
+                    required=True,
+                ),
+                "Hours": st.column_config.NumberColumn(
+                    "Hours",
+                    help="Hours allocated for this flow",
+                    min_value=0,
+                    step=1,
+                    required=True,
+                ),
+            },
+            use_container_width=True,
+            key="time_river_editor",
+        )
+
+        # Persist edits across reruns.
+        st.session_state.time_river_rows = edited_rows
+
+        cleaned_rows = edited_rows.copy()
+        cleaned_rows["Source"] = (
+            cleaned_rows["Source"].fillna("").astype(str).str.strip()
+        )
+        cleaned_rows["Target"] = (
+            cleaned_rows["Target"].fillna("").astype(str).str.strip()
+        )
+        cleaned_rows["Hours"] = pd.to_numeric(
+            cleaned_rows["Hours"],
+            errors="coerce",
+        ).fillna(0)
+
+        valid_rows = cleaned_rows[
+            (cleaned_rows["Source"] != "")
+            & (cleaned_rows["Target"] != "")
+            & (cleaned_rows["Hours"] > 0)
+        ]
+
+        weekly_total = valid_rows.loc[
+            valid_rows["Source"] == TIME_RIVER_ROOT,
+            "Hours",
+        ].sum()
+        remaining_hours = 168 - weekly_total
+
+        if weekly_total > 168:
+            st.warning(
+                "Allocated hours from Total Week exceed 168. "
+                f"Current total: {weekly_total:.0f}h."
+            )
+        else:
+            st.info(
+                f"Total allocated from Total Week: {weekly_total:.0f}h | "
+                f"Remaining: {remaining_hours:.0f}h"
+            )
+
+    with chart_col:
+        st.markdown("#### Chart")
+
+        if valid_rows.empty:
+            st.info("Add at least one valid flow row to generate the Sankey chart.")
+            return
+
+        all_nodes = pd.unique(
+            pd.concat(
+                [valid_rows["Source"], valid_rows["Target"]],
+                ignore_index=True,
+            )
+        )
+        node_to_index = {node_name: idx for idx, node_name in enumerate(all_nodes)}
+
+        source_indices = valid_rows["Source"].map(node_to_index).tolist()
+        target_indices = valid_rows["Target"].map(node_to_index).tolist()
+        flow_values = valid_rows["Hours"].tolist()
+
+        node_colors = []
+        for idx, node_name in enumerate(all_nodes):
+            node_colors.append(
+                TIME_RIVER_NODE_COLOR_MAP.get(
+                    node_name,
+                    TIME_RIVER_FALLBACK_COLORS[
+                        idx % len(TIME_RIVER_FALLBACK_COLORS)
+                    ],
+                )
+            )
+
+        link_colors = [
+            _hex_to_rgba(node_colors[source_idx], alpha=0.35)
+            for source_idx in source_indices
+        ]
+
+        sankey_fig = go.Figure(
+            data=[
+                go.Sankey(
+                    arrangement="snap",
+                    node={
+                        "pad": 18,
+                        "thickness": 18,
+                        "line": {"color": "#0F172A", "width": 0.5},
+                        "label": list(all_nodes),
+                        "color": node_colors,
+                    },
+                    link={
+                        "source": source_indices,
+                        "target": target_indices,
+                        "value": flow_values,
+                        "color": link_colors,
+                    },
+                )
+            ]
+        )
+        sankey_fig.update_layout(
+            template="plotly_dark",
+            margin={"l": 10, "r": 10, "t": 25, "b": 10},
+            font={"size": 13},
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+
+        st.plotly_chart(
+            sankey_fig,
+            use_container_width=True,
+            config={"displaylogo": False},
+        )
 
 
 def render_heatmap_placeholder() -> None:
@@ -237,7 +432,7 @@ def main() -> None:
         render_welcome()
         render_radar_builder()
     elif selected_view == NAV_OPTIONS[1]:
-        render_sankey_placeholder()
+        render_sankey_builder()
     elif selected_view == NAV_OPTIONS[2]:
         render_heatmap_placeholder()
 
