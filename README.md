@@ -6,6 +6,10 @@
 
 An open-source Streamlit app for turning self-reflection data into interactive visuals.
 
+## Live App
+
+- Public URL: https://selfreflectiondiagramgenerator.streamlit.app/
+
 ## What It Does
 
 - Build an RPG-style skill profile with a radar chart.
@@ -19,6 +23,7 @@ An open-source Streamlit app for turning self-reflection data into interactive v
 - Step 2: RPG Skill Tree (Radar) implemented.
 - Step 3: Time River (Sankey) implemented.
 - Step 4: Consistency Heatmap implemented.
+- Deployed on Streamlit Cloud.
 
 ## Tech Stack
 
