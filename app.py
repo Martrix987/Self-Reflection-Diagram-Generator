@@ -12,6 +12,7 @@ from datetime import date, timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
 
 
@@ -107,26 +108,72 @@ def _last_n_days(day_count: int) -> list[date]:
 def _render_png_download(
     chart_figure: go.Figure,
     output_file_name: str,
+    key_prefix: str,
     button_label: str = "Download chart as PNG",
 ) -> None:
-    """Render a PNG download button for a Plotly figure."""
+    """Render a single PNG download button with cached export bytes."""
     try:
-        png_bytes = chart_figure.to_image(
-            format="png",
-            width=1200,
-            height=900,
-            scale=2,
+        png_bytes = _figure_to_png_bytes(
+            chart_figure.to_json(),
+            st.get_option("theme.base") or "dark",
         )
-    except ValueError:
-        st.warning("PNG export requires the kaleido package in your environment.")
+    except (ValueError, RuntimeError):
+        st.info(
+            "PNG export is unavailable on this host. Install Chrome or use "
+            "kaleido==0.2.1 for server environments."
+        )
+        return
+
+    st.download_button(
+        label=button_label,
+        data=png_bytes,
+        file_name=output_file_name,
+        mime="image/png",
+        width="stretch",
+        key=f"{key_prefix}_download_png_button",
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _figure_to_png_bytes(figure_json: str, theme_base: str) -> bytes:
+    """Convert a Plotly figure JSON payload into themed PNG bytes."""
+    export_figure = pio.from_json(figure_json)
+
+    if theme_base == "light":
+        export_figure.update_layout(
+            template="plotly_white",
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+            font={"color": "#0F172A"},
+        )
     else:
-        st.download_button(
-            label=button_label,
-            data=png_bytes,
-            file_name=output_file_name,
-            mime="image/png",
-            use_container_width=True,
+        export_figure.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0B1220",
+            plot_bgcolor="#0B1220",
+            font={"color": "#E5E7EB"},
         )
+
+    return export_figure.to_image(
+        format="png",
+        width=1200,
+        height=900,
+        scale=2,
+    )
+
+
+def _hide_header_deploy_button() -> None:
+    """Hide Streamlit header action controls such as Deploy."""
+    st.markdown(
+        """
+        <style>
+            [data-testid="stHeaderActionElements"] {
+                display: none;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_welcome() -> None:
@@ -160,13 +207,19 @@ def render_radar_builder() -> None:
     with input_col:
         st.markdown("#### User Inputs")
 
-        # Let users add custom skills dynamically.
-        new_skill = st.text_input(
-            "Add a custom skill (recommended to atleast add 3 skills)",
-            placeholder="Example: Leadership",
-        )
+        # Use a form so pressing Enter submits the new skill immediately.
+        with st.form("rpg_add_skill_form", clear_on_submit=True):
+            new_skill = st.text_input(
+                "Add a custom skill (recommended to at least add 3 skills)",
+                placeholder="Example: Leadership",
+                key="rpg_new_skill_input",
+            )
+            add_skill_submitted = st.form_submit_button(
+                "Add skill",
+                width="stretch",
+            )
 
-        if st.button("Add skill", use_container_width=True):
+        if add_skill_submitted:
             cleaned_skill = _normalize_skill_name(new_skill)
             existing = {skill.casefold() for skill in st.session_state.rpg_skills}
 
@@ -188,7 +241,7 @@ def render_radar_builder() -> None:
             "Remove custom skills",
             options=custom_skills,
         )
-        if st.button("Remove selected skills", use_container_width=True):
+        if st.button("Remove selected skills", width="stretch"):
             if skills_to_remove:
                 st.session_state.rpg_skills = [
                     skill
@@ -240,6 +293,8 @@ def render_radar_builder() -> None:
         radar_fig.update_layout(
             showlegend=False,
             margin={"l": 20, "r": 20, "t": 30, "b": 20},
+            transition={"duration": 0},
+            uirevision="rpg-radar-fixed",
             polar={
                 "radialaxis": {
                     "visible": True,
@@ -252,30 +307,16 @@ def render_radar_builder() -> None:
 
         st.plotly_chart(
             radar_fig,
-            use_container_width=True,
+            width="stretch",
             config=PLOTLY_CHART_CONFIG,
+            key="rpg_radar_chart",
         )
 
-        # Export the chart as PNG bytes for direct download in the browser.
-        try:
-            png_bytes = radar_fig.to_image(
-                format="png",
-                width=1200,
-                height=900,
-                scale=2,
-            )
-        except ValueError:
-            st.warning(
-                "PNG export requires the kaleido package in your environment."
-            )
-        else:
-            st.download_button(
-                label="Download chart as PNG",
-                data=png_bytes,
-                file_name="rpg_skill_tree.png",
-                mime="image/png",
-                use_container_width=True,
-            )
+        _render_png_download(
+            chart_figure=radar_fig,
+            output_file_name="rpg_skill_tree.png",
+            key_prefix="rpg_skill_tree",
+        )
 
 
 def render_sankey_builder() -> None:
@@ -319,12 +360,58 @@ def render_sankey_builder() -> None:
                     required=True,
                 ),
             },
-            use_container_width=True,
+            width="stretch",
             key="time_river_editor",
         )
 
         # Persist edits across reruns.
         st.session_state.time_river_rows = edited_rows
+
+        st.markdown("#### Quick Edit Tools")
+
+        columns_to_clear = st.multiselect(
+            "Columns to clear for all rows",
+            options=["Source", "Target", "Hours"],
+            key="time_river_columns_to_clear",
+        )
+        if st.button(
+            "Clear selected columns",
+            width="stretch",
+            key="time_river_clear_columns_button",
+        ):
+            if columns_to_clear:
+                updated_rows = st.session_state.time_river_rows.copy()
+                for column_name in columns_to_clear:
+                    if column_name == "Hours":
+                        updated_rows[column_name] = 0
+                    else:
+                        updated_rows[column_name] = ""
+                st.session_state.time_river_rows = updated_rows
+                st.rerun()
+            else:
+                st.info("Select at least one column to clear.")
+
+        if not edited_rows.empty:
+            row_options = list(range(len(edited_rows)))
+            rows_to_delete = st.multiselect(
+                "Rows to delete",
+                options=row_options,
+                format_func=lambda row_idx: f"Row {row_idx + 1}",
+                key="time_river_rows_to_delete",
+            )
+            if st.button(
+                "Delete selected rows",
+                width="stretch",
+                key="time_river_delete_rows_button",
+            ):
+                if rows_to_delete:
+                    st.session_state.time_river_rows = (
+                        edited_rows.drop(index=rows_to_delete)
+                        .reset_index(drop=True)
+                    )
+                    st.rerun()
+                else:
+                    st.info("Select at least one row to delete.")
 
         cleaned_rows = edited_rows.copy()
         cleaned_rows["Source"] = (
@@ -420,19 +507,23 @@ def render_sankey_builder() -> None:
             template="plotly_dark",
             margin={"l": 10, "r": 10, "t": 25, "b": 10},
             font={"size": 13},
+            transition={"duration": 0},
+            uirevision="time-river-fixed",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
         )
 
         st.plotly_chart(
             sankey_fig,
-            use_container_width=True,
+            width="stretch",
             config=PLOTLY_CHART_CONFIG,
+            key="time_river_sankey_chart",
         )
 
         _render_png_download(
             chart_figure=sankey_fig,
             output_file_name="time_river_sankey.png",
+            key_prefix="time_river_sankey",
         )
 
 
@@ -457,14 +548,14 @@ def render_heatmap_builder() -> None:
         # Quick actions for bulk updates to the 30-day grid.
         quick_action_col_1, quick_action_col_2 = st.columns(2)
         with quick_action_col_1:
-            if st.button("Mark all done", use_container_width=True):
+            if st.button("Mark all done", width="stretch"):
                 for current_day in last_30_days:
                     st.session_state[
                         f"habit_done_{current_day.isoformat()}"
                     ] = True
 
         with quick_action_col_2:
-            if st.button("Clear all", use_container_width=True):
+            if st.button("Clear all", width="stretch"):
                 for current_day in last_30_days:
                     st.session_state[
                         f"habit_done_{current_day.isoformat()}"
@@ -525,12 +616,12 @@ def render_heatmap_builder() -> None:
             day_index = int(row["DayIndex"])
             day_status = int(row["Done"])
             row_date = row["Date"]
-            iso_year, iso_week, _ = row_date.isocalendar()
+            _, iso_week, _ = row_date.isocalendar()
 
             z_values[day_index][week_index] = day_status
             hover_text[day_index][week_index] = (
-                f"{row_date:%Y-%m-%d}<br>"
-                f"Week: {iso_year}-W{iso_week:02d}<br>"
+                f"Date: {row_date:%b %d}<br>"
+                f"Week: W{iso_week:02d}<br>"
                 f"{habit_name or 'Habit'}: "
                 f"{'Done' if day_status == 1 else 'Missed'}"
             )
@@ -538,8 +629,8 @@ def render_heatmap_builder() -> None:
         week_labels = []
         for week_index in range(total_weeks):
             week_start = grid_start + timedelta(days=7 * week_index)
-            week_iso_year, week_iso_number, _ = week_start.isocalendar()
-            week_labels.append(f"{week_iso_year}-W{week_iso_number:02d}")
+            _, week_iso_number, _ = week_start.isocalendar()
+            week_labels.append(f"W{week_iso_number:02d} ({week_start:%b %d})")
 
         day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -567,7 +658,7 @@ def render_heatmap_builder() -> None:
             template="plotly_dark",
             title=(habit_name or "Habit") + " - Last 30 Days",
             margin={"l": 20, "r": 20, "t": 55, "b": 20},
-            xaxis={"title": "ISO Week", "showgrid": False},
+            xaxis={"title": "Week Number and Date", "showgrid": False},
             yaxis={
                 "title": "",
                 "showgrid": False,
@@ -579,13 +670,15 @@ def render_heatmap_builder() -> None:
 
         st.plotly_chart(
             heatmap_fig,
-            use_container_width=True,
+            width="stretch",
             config=PLOTLY_CHART_CONFIG,
+            key="consistency_heatmap_chart",
         )
 
         _render_png_download(
             chart_figure=heatmap_fig,
             output_file_name="consistency_heatmap.png",
+            key_prefix="consistency_heatmap",
         )
 
 
@@ -596,6 +689,8 @@ def main() -> None:
         page_icon="📊",
         layout="wide",
     )
+
+    _hide_header_deploy_button()
 
     st.title("Self-Reflection Diagram Generator 📊")
 
