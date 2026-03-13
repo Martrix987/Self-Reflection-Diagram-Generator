@@ -17,8 +17,8 @@ An open-source Streamlit app for turning self-reflection data into interactive v
 
 - Step 1: Base app layout and navigation completed.
 - Step 2: RPG Skill Tree (Radar) implemented.
-- Step 3: Time River (Sankey) planned.
-- Step 4: Consistency Heatmap planned.
+- Step 3: Time River (Sankey) implemented.
+- Step 4: Consistency Heatmap implemented.
 
 ## Tech Stack
 

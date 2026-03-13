@@ -7,6 +7,7 @@ Step 1 scaffold:
 """
 
 import hashlib
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -22,13 +23,7 @@ NAV_OPTIONS = [
 ]
 
 # Default skills shown when the app is opened for the first time.
-DEFAULT_RPG_SKILLS = [
-    "Resilience",
-    "Problem Solving",
-    "Technical Mastery",
-    "Communication",
-    "Time Management",
-]
+DEFAULT_RPG_SKILLS = []
 
 TIME_RIVER_ROOT = "Total Week (168)"
 
@@ -66,6 +61,17 @@ TIME_RIVER_FALLBACK_COLORS = [
     "#2DD4BF",
 ]
 
+HEATMAP_WINDOW_DAYS = 30
+HEATMAP_DONE_COLOR = "#22C55E"
+HEATMAP_MISSED_COLOR = "#334155"
+
+# Hide zoom/interaction controls that are not useful in this app context.
+PLOTLY_CHART_CONFIG = {
+    "displaylogo": False,
+    "displayModeBar": False,
+    "scrollZoom": False,
+}
+
 
 def _normalize_skill_name(skill_name: str) -> str:
     """Clean user text input by trimming spaces and collapsing repeats."""
@@ -89,25 +95,47 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
+def _last_n_days(day_count: int) -> list[date]:
+    """Return an ordered list of dates covering the last N days."""
+    today = date.today()
+    return [
+        today - timedelta(days=offset)
+        for offset in range(day_count - 1, -1, -1)
+    ]
+
+
+def _render_png_download(
+    chart_figure: go.Figure,
+    output_file_name: str,
+    button_label: str = "Download chart as PNG",
+) -> None:
+    """Render a PNG download button for a Plotly figure."""
+    try:
+        png_bytes = chart_figure.to_image(
+            format="png",
+            width=1200,
+            height=900,
+            scale=2,
+        )
+    except ValueError:
+        st.warning("PNG export requires the kaleido package in your environment.")
+    else:
+        st.download_button(
+            label=button_label,
+            data=png_bytes,
+            file_name=output_file_name,
+            mime="image/png",
+            use_container_width=True,
+        )
+
+
 def render_welcome() -> None:
     """Render a clean welcome panel for first-time visitors."""
     st.markdown("### Welcome to your personal reflection studio")
 
-    # Use columns to create a modern, readable hero section.
-    left_col, right_col = st.columns([2, 1], gap="large")
-
-    with left_col:
-        st.write(
-            "Track your habits, skills, and time allocation in one place. "
-            "This tool helps you turn self-reflection data into visual patterns "
-            "you can explore and improve over time."
-        )
-
-    with right_col:
-        st.info(
-            "Use the sidebar to switch between diagram generators and start "
-            "building your reflection dashboard."
-        )
+    st.markdown(
+        "Track your habits, skills, and time allocation in one place. This tool helps you turn self-reflection data into visual patterns you can explore and improve over time."
+    )
 
     with st.expander("How this tool helps", expanded=False):
         st.markdown(
@@ -134,7 +162,7 @@ def render_radar_builder() -> None:
 
         # Let users add custom skills dynamically.
         new_skill = st.text_input(
-            "Add a custom skill",
+            "Add a custom skill (recommended to atleast add 3 skills)",
             placeholder="Example: Leadership",
         )
 
@@ -225,7 +253,7 @@ def render_radar_builder() -> None:
         st.plotly_chart(
             radar_fig,
             use_container_width=True,
-            config={"displaylogo": False},
+            config=PLOTLY_CHART_CONFIG,
         )
 
         # Export the chart as PNG bytes for direct download in the browser.
@@ -399,14 +427,166 @@ def render_sankey_builder() -> None:
         st.plotly_chart(
             sankey_fig,
             use_container_width=True,
-            config={"displaylogo": False},
+            config=PLOTLY_CHART_CONFIG,
+        )
+
+        _render_png_download(
+            chart_figure=sankey_fig,
+            output_file_name="time_river_sankey.png",
         )
 
 
-def render_heatmap_placeholder() -> None:
-    """Placeholder content for the consistency heatmap view."""
+def render_heatmap_builder() -> None:
+    """Render a GitHub-style habit consistency heatmap for the last 30 days."""
     st.subheader("🟩 Consistency Heatmap")
-    st.caption("Heatmap generator will be implemented in a later step.")
+    st.caption("Track one habit daily and visualize your consistency pattern.")
+
+    last_30_days = _last_n_days(HEATMAP_WINDOW_DAYS)
+
+    # Use a two-column layout: controls on the left and chart on the right.
+    input_col, chart_col = st.columns([1, 1.2], gap="large")
+
+    with input_col:
+        st.markdown("#### User Inputs")
+        habit_name = st.text_input(
+            "Habit name",
+            placeholder="Example: Worked out",
+            key="heatmap_habit_name",
+        )
+
+        # Quick actions for bulk updates to the 30-day grid.
+        quick_action_col_1, quick_action_col_2 = st.columns(2)
+        with quick_action_col_1:
+            if st.button("Mark all done", use_container_width=True):
+                for current_day in last_30_days:
+                    st.session_state[
+                        f"habit_done_{current_day.isoformat()}"
+                    ] = True
+
+        with quick_action_col_2:
+            if st.button("Clear all", use_container_width=True):
+                for current_day in last_30_days:
+                    st.session_state[
+                        f"habit_done_{current_day.isoformat()}"
+                    ] = False
+
+        st.markdown("#### Last 30 Days")
+        st.caption("Check a box when the habit was completed on that date.")
+
+        # Render a simple date checkbox grid to match GitHub-like tracking.
+        date_grid_columns = st.columns(5, gap="small")
+        for index, current_day in enumerate(last_30_days):
+            day_key = f"habit_done_{current_day.isoformat()}"
+
+            if day_key not in st.session_state:
+                st.session_state[day_key] = False
+
+            with date_grid_columns[index % 5]:
+                st.checkbox(
+                    label=current_day.strftime("%b %d"),
+                    key=day_key,
+                )
+
+        completion_values = [
+            int(st.session_state[f"habit_done_{current_day.isoformat()}"])
+            for current_day in last_30_days
+        ]
+        done_days = sum(completion_values)
+        completion_rate = (done_days / HEATMAP_WINDOW_DAYS) * 100
+
+        st.metric("Completed Days", f"{done_days}/{HEATMAP_WINDOW_DAYS}")
+        st.metric("Completion Rate", f"{completion_rate:.0f}%")
+
+    with chart_col:
+        st.markdown("#### Chart")
+
+        heatmap_df = pd.DataFrame(
+            {
+                "Date": last_30_days,
+                "Done": completion_values,
+            }
+        )
+
+        grid_start = last_30_days[0]
+        heatmap_df["WeekIndex"] = heatmap_df["Date"].apply(
+            lambda current_day: (current_day - grid_start).days // 7
+        )
+        heatmap_df["DayIndex"] = heatmap_df["Date"].apply(
+            lambda current_day: current_day.weekday()
+        )
+
+        total_weeks = int(heatmap_df["WeekIndex"].max()) + 1
+        z_values = [[None for _ in range(total_weeks)] for _ in range(7)]
+        hover_text = [["" for _ in range(total_weeks)] for _ in range(7)]
+
+        # Build the 7 x N matrix used by Plotly's Heatmap trace.
+        for _, row in heatmap_df.iterrows():
+            week_index = int(row["WeekIndex"])
+            day_index = int(row["DayIndex"])
+            day_status = int(row["Done"])
+            row_date = row["Date"]
+            iso_year, iso_week, _ = row_date.isocalendar()
+
+            z_values[day_index][week_index] = day_status
+            hover_text[day_index][week_index] = (
+                f"{row_date:%Y-%m-%d}<br>"
+                f"Week: {iso_year}-W{iso_week:02d}<br>"
+                f"{habit_name or 'Habit'}: "
+                f"{'Done' if day_status == 1 else 'Missed'}"
+            )
+
+        week_labels = []
+        for week_index in range(total_weeks):
+            week_start = grid_start + timedelta(days=7 * week_index)
+            week_iso_year, week_iso_number, _ = week_start.isocalendar()
+            week_labels.append(f"{week_iso_year}-W{week_iso_number:02d}")
+
+        day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        heatmap_fig = go.Figure(
+            data=[
+                go.Heatmap(
+                    z=z_values,
+                    x=week_labels,
+                    y=day_labels,
+                    text=hover_text,
+                    hovertemplate="%{text}<extra></extra>",
+                    colorscale=[
+                        [0.0, HEATMAP_MISSED_COLOR],
+                        [1.0, HEATMAP_DONE_COLOR],
+                    ],
+                    zmin=0,
+                    zmax=1,
+                    xgap=4,
+                    ygap=4,
+                    showscale=False,
+                )
+            ]
+        )
+        heatmap_fig.update_layout(
+            template="plotly_dark",
+            title=(habit_name or "Habit") + " - Last 30 Days",
+            margin={"l": 20, "r": 20, "t": 55, "b": 20},
+            xaxis={"title": "ISO Week", "showgrid": False},
+            yaxis={
+                "title": "",
+                "showgrid": False,
+                "autorange": "reversed",
+            },
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+
+        st.plotly_chart(
+            heatmap_fig,
+            use_container_width=True,
+            config=PLOTLY_CHART_CONFIG,
+        )
+
+        _render_png_download(
+            chart_figure=heatmap_fig,
+            output_file_name="consistency_heatmap.png",
+        )
 
 
 def main() -> None:
@@ -434,7 +614,7 @@ def main() -> None:
     elif selected_view == NAV_OPTIONS[1]:
         render_sankey_builder()
     elif selected_view == NAV_OPTIONS[2]:
-        render_heatmap_placeholder()
+        render_heatmap_builder()
 
 
 if __name__ == "__main__":
