@@ -12,7 +12,6 @@ from datetime import date, timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.io as pio
 import streamlit as st
 
 
@@ -96,6 +95,23 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
+def _contrast_text_color(hex_color: str) -> str:
+    """Choose a high-contrast text color for a given background.
+
+    Returns either black or white based on the background luminance.
+    """
+    clean_hex = hex_color.lstrip("#")
+    red, green, blue = (
+        int(clean_hex[0:2], 16),
+        int(clean_hex[2:4], 16),
+        int(clean_hex[4:6], 16),
+    )
+
+    # Perceived brightness formula.
+    brightness = (red * 299 + green * 587 + blue * 114) / 1000
+    return "#000000" if brightness > 128 else "#FFFFFF"
+
+
 def _last_n_days(day_count: int) -> list[date]:
     """Return an ordered list of dates covering the last N days."""
     today = date.today()
@@ -108,72 +124,31 @@ def _last_n_days(day_count: int) -> list[date]:
 def _render_png_download(
     chart_figure: go.Figure,
     output_file_name: str,
-    key_prefix: str,
     button_label: str = "Download chart as PNG",
 ) -> None:
-    """Render a single PNG download button with cached export bytes."""
+    """Render a PNG download button for a Plotly figure."""
     try:
-        png_bytes = _figure_to_png_bytes(
-            chart_figure.to_json(),
-            st.get_option("theme.base") or "dark",
+        png_bytes = chart_figure.to_image(
+            format="png",
+            width=1200,
+            height=900,
+            scale=2,
         )
-    except (ValueError, RuntimeError):
-        st.info(
-            "PNG export is unavailable on this host. Install Chrome or use "
-            "kaleido==0.2.1 for server environments."
+    except (ValueError, RuntimeError) as err:
+        # Kaleido can raise RuntimeError if it cannot find Chrome.
+        st.warning(
+            "PNG export requires the kaleido package and a Chrome/Chromium runtime "
+            "(e.g., install Chrome or run `plotly_get_chrome`)."
         )
-        return
-
-    st.download_button(
-        label=button_label,
-        data=png_bytes,
-        file_name=output_file_name,
-        mime="image/png",
-        width="stretch",
-        key=f"{key_prefix}_download_png_button",
-    )
-
-
-@st.cache_data(show_spinner=False)
-def _figure_to_png_bytes(figure_json: str, theme_base: str) -> bytes:
-    """Convert a Plotly figure JSON payload into themed PNG bytes."""
-    export_figure = pio.from_json(figure_json)
-
-    if theme_base == "light":
-        export_figure.update_layout(
-            template="plotly_white",
-            paper_bgcolor="#FFFFFF",
-            plot_bgcolor="#FFFFFF",
-            font={"color": "#0F172A"},
-        )
+        st.info(str(err))
     else:
-        export_figure.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#0B1220",
-            plot_bgcolor="#0B1220",
-            font={"color": "#E5E7EB"},
+        st.download_button(
+            label=button_label,
+            data=png_bytes,
+            file_name=output_file_name,
+            mime="image/png",
+            use_container_width=True,
         )
-
-    return export_figure.to_image(
-        format="png",
-        width=1200,
-        height=900,
-        scale=2,
-    )
-
-
-def _hide_header_deploy_button() -> None:
-    """Hide Streamlit header action controls such as Deploy."""
-    st.markdown(
-        """
-        <style>
-            [data-testid="stHeaderActionElements"] {
-                display: none;
-            }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def render_welcome() -> None:
@@ -201,25 +176,25 @@ def render_radar_builder() -> None:
     if "rpg_skills" not in st.session_state:
         st.session_state.rpg_skills = DEFAULT_RPG_SKILLS.copy()
 
+    # Default chart appearance controls, stored as session state so they persist across reruns.
+    if "rpg_chart_text_size" not in st.session_state:
+        st.session_state.rpg_chart_text_size = 14
+    if "rpg_chart_background" not in st.session_state:
+        st.session_state.rpg_chart_background = "#0F172A"
+
     # Split the section into input controls and live chart preview.
     input_col, chart_col = st.columns([1, 1.2], gap="large")
 
     with input_col:
         st.markdown("#### User Inputs")
 
-        # Use a form so pressing Enter submits the new skill immediately.
-        with st.form("rpg_add_skill_form", clear_on_submit=True):
-            new_skill = st.text_input(
-                "Add a custom skill (recommended to at least add 3 skills)",
-                placeholder="Example: Leadership",
-                key="rpg_new_skill_input",
-            )
-            add_skill_submitted = st.form_submit_button(
-                "Add skill",
-                width="stretch",
-            )
+        # Let users add custom skills dynamically.
+        new_skill = st.text_input(
+            "Add a custom skill (recommended to atleast add 3 skills)",
+            placeholder="Example: Leadership",
+        )
 
-        if add_skill_submitted:
+        if st.button("Add skill", use_container_width=True):
             cleaned_skill = _normalize_skill_name(new_skill)
             existing = {skill.casefold() for skill in st.session_state.rpg_skills}
 
@@ -241,7 +216,7 @@ def render_radar_builder() -> None:
             "Remove custom skills",
             options=custom_skills,
         )
-        if st.button("Remove selected skills", width="stretch"):
+        if st.button("Remove selected skills", use_container_width=True):
             if skills_to_remove:
                 st.session_state.rpg_skills = [
                     skill
@@ -260,10 +235,11 @@ def render_radar_builder() -> None:
             skill_scores[skill_name] = st.slider(
                 label=skill_name,
                 min_value=1,
-                max_value=10,
+                max_value=20,
                 value=5,
                 key=_slider_key_for_skill(skill_name),
             )
+
 
     # Prepare data used by Plotly Express for the radar chart.
     radar_df = pd.DataFrame(
@@ -272,6 +248,10 @@ def render_radar_builder() -> None:
             "Score": list(skill_scores.values()),
         }
     )
+
+    # Apply previously selected appearance settings.
+    chart_text_size = st.session_state.rpg_chart_text_size
+    chart_background = st.session_state.rpg_chart_background
 
     with chart_col:
         st.markdown("#### Chart")
@@ -290,33 +270,55 @@ def render_radar_builder() -> None:
         )
 
         # Keep the radial axis fixed at 0-10 to prevent visual distortion.
+        text_color = _contrast_text_color(chart_background)
+
         radar_fig.update_layout(
             showlegend=False,
             margin={"l": 20, "r": 20, "t": 30, "b": 20},
-            transition={"duration": 0},
-            uirevision="rpg-radar-fixed",
+            font={"size": chart_text_size, "color": text_color},
+            paper_bgcolor=chart_background,
+            plot_bgcolor=chart_background,
             polar={
+                "bgcolor": chart_background,
                 "radialaxis": {
                     "visible": True,
-                    "range": [0, 10],
+                    "range": [0, 20],
                     "tickmode": "linear",
-                    "dtick": 1,
-                }
+                    "dtick": 2,
+                    "tickfont": {"size": chart_text_size, "color": text_color},
+                },
+                "angularaxis": {"tickfont": {"size": chart_text_size, "color": text_color}},
             },
         )
 
         st.plotly_chart(
             radar_fig,
-            width="stretch",
+            use_container_width=True,
             config=PLOTLY_CHART_CONFIG,
-            key="rpg_radar_chart",
         )
 
+        # Render the chart download button (handles missing kaleido/Chrome).
         _render_png_download(
             chart_figure=radar_fig,
             output_file_name="rpg_skill_tree.png",
-            key_prefix="rpg_skill_tree",
         )
+
+        with st.expander("Settings", expanded=False):
+            st.markdown("#### Chart appearance")
+            st.slider(
+                "Skill label font size",
+                min_value=8,
+                max_value=32,
+                value=st.session_state.rpg_chart_text_size,
+                key="rpg_chart_text_size",
+                help="Set the size of the skill labels in the radar chart.",
+            )
+            st.color_picker(
+                "Chart background color",
+                value=st.session_state.rpg_chart_background,
+                key="rpg_chart_background",
+                help="Pick a background color for the chart export.",
+            )
 
 
 def render_sankey_builder() -> None:
@@ -360,58 +362,12 @@ def render_sankey_builder() -> None:
                     required=True,
                 ),
             },
-            width="stretch",
+            use_container_width=True,
             key="time_river_editor",
         )
 
         # Persist edits across reruns.
         st.session_state.time_river_rows = edited_rows
-
-        st.markdown("#### Quick Edit Tools")
-
-        columns_to_clear = st.multiselect(
-            "Columns to clear for all rows",
-            options=["Source", "Target", "Hours"],
-            key="time_river_columns_to_clear",
-        )
-        if st.button(
-            "Clear selected columns",
-            width="stretch",
-            key="time_river_clear_columns_button",
-        ):
-            if columns_to_clear:
-                updated_rows = st.session_state.time_river_rows.copy()
-                for column_name in columns_to_clear:
-                    if column_name == "Hours":
-                        updated_rows[column_name] = 0
-                    else:
-                        updated_rows[column_name] = ""
-                st.session_state.time_river_rows = updated_rows
-                st.rerun()
-            else:
-                st.info("Select at least one column to clear.")
-
-        if not edited_rows.empty:
-            row_options = list(range(len(edited_rows)))
-            rows_to_delete = st.multiselect(
-                "Rows to delete",
-                options=row_options,
-                format_func=lambda row_idx: f"Row {row_idx + 1}",
-                key="time_river_rows_to_delete",
-            )
-            if st.button(
-                "Delete selected rows",
-                width="stretch",
-                key="time_river_delete_rows_button",
-            ):
-                if rows_to_delete:
-                    st.session_state.time_river_rows = (
-                        edited_rows.drop(index=rows_to_delete)
-                        .reset_index(drop=True)
-                    )
-                    st.rerun()
-                else:
-                    st.info("Select at least one row to delete.")
 
         cleaned_rows = edited_rows.copy()
         cleaned_rows["Source"] = (
@@ -507,23 +463,19 @@ def render_sankey_builder() -> None:
             template="plotly_dark",
             margin={"l": 10, "r": 10, "t": 25, "b": 10},
             font={"size": 13},
-            transition={"duration": 0},
-            uirevision="time-river-fixed",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
         )
 
         st.plotly_chart(
             sankey_fig,
-            width="stretch",
+            use_container_width=True,
             config=PLOTLY_CHART_CONFIG,
-            key="time_river_sankey_chart",
         )
 
         _render_png_download(
             chart_figure=sankey_fig,
             output_file_name="time_river_sankey.png",
-            key_prefix="time_river_sankey",
         )
 
 
@@ -548,14 +500,14 @@ def render_heatmap_builder() -> None:
         # Quick actions for bulk updates to the 30-day grid.
         quick_action_col_1, quick_action_col_2 = st.columns(2)
         with quick_action_col_1:
-            if st.button("Mark all done", width="stretch"):
+            if st.button("Mark all done", use_container_width=True):
                 for current_day in last_30_days:
                     st.session_state[
                         f"habit_done_{current_day.isoformat()}"
                     ] = True
 
         with quick_action_col_2:
-            if st.button("Clear all", width="stretch"):
+            if st.button("Clear all", use_container_width=True):
                 for current_day in last_30_days:
                     st.session_state[
                         f"habit_done_{current_day.isoformat()}"
@@ -616,12 +568,12 @@ def render_heatmap_builder() -> None:
             day_index = int(row["DayIndex"])
             day_status = int(row["Done"])
             row_date = row["Date"]
-            _, iso_week, _ = row_date.isocalendar()
+            iso_year, iso_week, _ = row_date.isocalendar()
 
             z_values[day_index][week_index] = day_status
             hover_text[day_index][week_index] = (
-                f"Date: {row_date:%b %d}<br>"
-                f"Week: W{iso_week:02d}<br>"
+                f"{row_date:%Y-%m-%d}<br>"
+                f"Week: {iso_year}-W{iso_week:02d}<br>"
                 f"{habit_name or 'Habit'}: "
                 f"{'Done' if day_status == 1 else 'Missed'}"
             )
@@ -629,8 +581,8 @@ def render_heatmap_builder() -> None:
         week_labels = []
         for week_index in range(total_weeks):
             week_start = grid_start + timedelta(days=7 * week_index)
-            _, week_iso_number, _ = week_start.isocalendar()
-            week_labels.append(f"W{week_iso_number:02d} ({week_start:%b %d})")
+            week_iso_year, week_iso_number, _ = week_start.isocalendar()
+            week_labels.append(f"{week_iso_year}-W{week_iso_number:02d}")
 
         day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -658,7 +610,7 @@ def render_heatmap_builder() -> None:
             template="plotly_dark",
             title=(habit_name or "Habit") + " - Last 30 Days",
             margin={"l": 20, "r": 20, "t": 55, "b": 20},
-            xaxis={"title": "Week Number and Date", "showgrid": False},
+            xaxis={"title": "ISO Week", "showgrid": False},
             yaxis={
                 "title": "",
                 "showgrid": False,
@@ -670,15 +622,13 @@ def render_heatmap_builder() -> None:
 
         st.plotly_chart(
             heatmap_fig,
-            width="stretch",
+            use_container_width=True,
             config=PLOTLY_CHART_CONFIG,
-            key="consistency_heatmap_chart",
         )
 
         _render_png_download(
             chart_figure=heatmap_fig,
             output_file_name="consistency_heatmap.png",
-            key_prefix="consistency_heatmap",
         )
 
 
@@ -689,8 +639,6 @@ def main() -> None:
         page_icon="📊",
         layout="wide",
     )
-
-    _hide_header_deploy_button()
 
     st.title("Self-Reflection Diagram Generator 📊")
 
