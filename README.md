@@ -83,16 +83,6 @@ The app opens at http://localhost:8501.
 - For Streamlit apps, do not run `python app.py`:
 	- Use `python -m streamlit run app.py`.
 
-## Contributing
-
-Issues and pull requests are welcome.
-
-1. Fork the project.
-2. Create a feature branch.
-3. Commit your changes.
-4. Push the branch.
-5. Open a pull request.
-
 ## License
 
 Distributed under the MIT License. See LICENSE for details.
